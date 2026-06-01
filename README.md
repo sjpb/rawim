@@ -16,6 +16,10 @@ Supports Rocky Linux and Ubuntu container images.
     - `util-linux` (`losetup`, `blockdev`)
     - `coreutils` (`truncate`, `numfmt`)
     - `libcap2-bin` (`setcap`)
+
+    ```bash
+    sudo apt-get install -y podman parted dosfstools e2fsprogs util-linux libcap2-bin
+    ```
     
 2. Clone this repository and build the binary:
     ```bash
@@ -43,6 +47,9 @@ Supports Rocky Linux and Ubuntu container images.
     ./rawim.sh localhost/rocky9sysimg:latest
     ```
 
+    > **Note:** The tool mounts loop devices and runs privileged containers, so it must be run as root (or with sudo). Therefore it is usually more convenient to run
+    the container build as root too.
+
 ## Usage
 
 ```
@@ -66,43 +73,18 @@ Options:
 
 ```bash
 # Basic – output defaults to myimage.raw
-sudo ctr2raw docker.io/myrepo/myimage:latest
+sudo rawim docker.io/myrepo/myimage:latest
 
 # Custom output path and larger root partition
-sudo ctr2raw -output /var/images/server.raw -root-extra 1G docker.io/myrepo/myimage:latest
+sudo rawim -output /var/images/server.raw -root-extra 1G docker.io/myrepo/myimage:latest
 
 # Extra capability on top of the built-in defaults
-sudo ctr2raw -capfiles-user '/usr/sbin/tcpdump:cap_net_raw=p' docker.io/myrepo/myimage:latest
+sudo rawim -capfiles-user '/usr/sbin/tcpdump:cap_net_raw=p' docker.io/myrepo/myimage:latest
 
 # IEC sizes (powers of two)
-sudo ctr2raw -esp 256Mi -root-extra 512Mi docker.io/myrepo/myimage:latest
+sudo rawim -esp 256Mi -root-extra 512Mi docker.io/myrepo/myimage:latest
 ```
 
-> **Note:** The tool mounts loop devices and runs privileged containers, so it must be run as root (or with sudo).
-
-## Runtime dependencies
-
-The following tools must be present on the **host** (not in the container):
-
-| Tool | Package (Ubuntu) |
-|------|-----------------|
-| `podman` | `podman` |
-| `parted` | `parted` |
-| `mkfs.vfat` | `dosfstools` |
-| `mkfs.ext4` | `e2fsprogs` |
-| `e2label` | `e2fsprogs` |
-| `fatlabel` | `dosfstools` |
-| `partprobe` | `parted` |
-| `losetup` | `util-linux` |
-| `blockdev` | `util-linux` |
-| `truncate` | `coreutils` |
-| `setcap` | `libcap2-bin` |
-| `numfmt` | `coreutils` |
-
-Install them all at once:
-
-```bash
-sudo apt-get install -y podman parted dosfstools e2fsprogs util-linux libcap2-bin
-```
-
-The container image itself must contain `dracut`, `bootctl` (`systemd-boot`), and a kernel.
+## TODO
+- Add how it works
+- Add sections on required packages and container build hints
