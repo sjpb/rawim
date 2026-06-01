@@ -47,9 +47,6 @@ func parseArgs() (config, error) {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: ctr2raw [options] <container-image>\n\nOptions:\n")
 		fs.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nEnvironment variables (flags take precedence):\n")
-		fmt.Fprintf(os.Stderr, "  ROOT_MOUNT      overrides -root-mount\n")
-		fmt.Fprintf(os.Stderr, "  CAPFILES_USER   overrides -capfiles-user\n")
 	}
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -62,14 +59,6 @@ func parseArgs() (config, error) {
 		return cfg, errors.New("exactly one positional argument required: <container-image>")
 	}
 	cfg.containerImage = fs.Arg(0)
-
-	// Environment variable fallbacks (flags win if explicitly set).
-	if cfg.rootMount == "" {
-		cfg.rootMount = os.Getenv("ROOT_MOUNT")
-	}
-	if cfg.capfilesUser == "" {
-		cfg.capfilesUser = os.Getenv("CAPFILES_USER")
-	}
 
 	// Derive defaults that depend on the image name.
 	tag, name := splitImageName(cfg.containerImage)
