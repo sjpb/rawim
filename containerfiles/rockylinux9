@@ -1,0 +1,9 @@
+FROM quay.io/rockylinux/rockylinux:9.6
+
+RUN dnf -y install systemd systemd-boot-unsigned kernel && \
+    dnf -y install NetworkManager cloud-init cloud-utils-growpart rng-tools chrony && \
+    dnf -y install openssh-server openssh-clients sudo rsyslog rsyslog-logrotate which ethtool && \
+    dnf -y clean all
+RUN systemctl enable NetworkManager && \
+    systemctl enable cloud-init && \
+    systemctl enable sshd

@@ -1,0 +1,23 @@
+FROM quay.io/rockylinux/rockylinux:9.6
+
+RUN echo 'keepcache=1' >> /etc/dnf/dnf.conf
+RUN dnf -y install systemd systemd-boot-unsigned kernel && \
+    dnf -y install NetworkManager cloud-init cloud-utils-growpart rng-tools chrony && \
+    dnf -y install openssh-server openssh-clients sudo rsyslog rsyslog-logrotate which ethtool && \
+    dnf -y clean all
+RUN systemctl enable NetworkManager && \
+    systemctl enable cloud-init && \
+    systemctl enable sshd
+
+RUN dnf install -y http://repos.openhpc.community/OpenHPC/3/EL_9/x86_64/ohpc-release-3-1.el9.x86_64.rpm &&
+    dnf -y install dnf-plugins-core && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y ohpc-base hwloc-ohpc 
+
+# control node:
+RUN dnf install -y ohpc-slurm-server
+# compute node:
+RUN dnf install -y  ohpc-base-compute
+
+
+RUN sed -i '/keepcache=1/d' /etc/dnf/dnf.conf
