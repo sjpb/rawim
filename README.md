@@ -8,11 +8,10 @@ Supports Rocky Linux and Ubuntu container images.
 1. Install prerequisites on the build host. On Ubuntu this is the following `apt` packages (tools shown in brackets, if different):
     - `go`
     - `podman`
-    - `parted`
+    - `parted` (`partprobe`)
     - `dosfstools` (`mkfs.vfat`)
     - `e2fsprogs` (`mkfs.ext4`, `e2label`)
     - `dosfstools` (`fatlabel`)
-    - `parted` (`partprobe`)
     - `util-linux` (`losetup`, `blockdev`)
     - `coreutils` (`truncate`, `numfmt`)
     - `libcap2-bin` (`setcap`)

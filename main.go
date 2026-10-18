@@ -340,6 +340,7 @@ func buildImage(cfg config) error {
 	// -------------------------------------------------------------------------
 	fmt.Println("Starting container with loop device access...")
 	ctrID, err := runOutput("podman", "run", "-d", "--privileged",
+		"--stop-signal=SIGKILL", // sleep as PID 1 ignores SIGTERM
 		"--device", loopDev, "--entrypoint", "sleep", cfg.containerImage, "infinity")
 	if err != nil {
 		return fmt.Errorf("podman run: %w", err)
@@ -579,11 +580,14 @@ func buildImage(cfg config) error {
 	if err := tarCmd.Start(); err != nil {
 		return fmt.Errorf("starting tar: %w", err)
 	}
-	if err := exportCmd.Wait(); err != nil {
-		return fmt.Errorf("podman export: %w", err)
+	// Wait for both so neither is left as a zombie; report the first failure.
+	exportErr := exportCmd.Wait()
+	tarErr := tarCmd.Wait()
+	if exportErr != nil {
+		return fmt.Errorf("podman export: %w", exportErr)
 	}
-	if err := tarCmd.Wait(); err != nil {
-		return fmt.Errorf("tar extract: %w", err)
+	if tarErr != nil {
+		return fmt.Errorf("tar extract: %w", tarErr)
 	}
 
 	// -------------------------------------------------------------------------
@@ -626,6 +630,13 @@ func buildImage(cfg config) error {
 		}
 		if err := run("setcap", parts[1], hostPath); err != nil {
 			return fmt.Errorf("setcap %s: %w", hostPath, err)
+		}
+	}
+
+	// The export carries no SELinux xattrs, so have the first boot relabel.
+	if distroID == "rocky" {
+		if err := os.WriteFile(filepath.Join(cfg.rootMount, ".autorelabel"), nil, 0o644); err != nil {
+			return fmt.Errorf("writing .autorelabel: %w", err)
 		}
 	}
 
