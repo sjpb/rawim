@@ -1,15 +1,16 @@
-// ctr2raw converts a container image into a bootable raw disk image.
+// rawim converts a container image into a bootable raw disk image.
 //
 // Usage:
 //
-//	ctr2raw [options] <container-image>
+//	rawim [options] <container-image>
 //
 // Example:
 //
-//	ctr2raw -output myimage.raw -root-extra 200M -esp 200M docker.io/myrepo/myimage:latest
+//	rawim -output myimage.raw -root-extra 200M -esp 200M docker.io/myrepo/myimage:latest
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // -----------------------------------------------------------------------------
@@ -37,15 +40,15 @@ type config struct {
 func parseArgs() (config, error) {
 	cfg := config{}
 
-	fs := flag.NewFlagSet("ctr2raw", flag.ContinueOnError)
+	fs := flag.NewFlagSet("rawim", flag.ContinueOnError)
 	fs.StringVar(&cfg.outputImage, "output", "", "Output raw image path (default: <image-name>.raw)")
 	fs.StringVar(&cfg.rootExtraSize, "root-extra", "200M", "Extra space for root partition (numfmt --from=auto syntax, e.g. 200M, 512Mi)")
 	fs.StringVar(&cfg.espSize, "esp", "200M", "ESP partition size (same syntax)")
 	fs.StringVar(&cfg.rootMount, "root-mount", "", "Mount point for root partition (default: /mnt/<image-name>)")
-	fs.StringVar(&cfg.capfilesUser, "capfiles-user", "", "Extra capability entry, e.g. '/usr/bin/foo:cap_net_raw=p'")
+	fs.StringVar(&cfg.capfilesUser, "capfiles-user", "", "Extra file capabilities: space-separated 'absolute_path:capability' entries, e.g. '/usr/bin/foo:cap_net_raw=p /usr/bin/bar:cap_setgid=ep'")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: ctr2raw [options] <container-image>\n\nOptions:\n")
+		fmt.Fprintf(os.Stderr, "Usage: rawim [options] <container-image>\n\nOptions:\n")
 		fs.PrintDefaults()
 	}
 
@@ -61,8 +64,7 @@ func parseArgs() (config, error) {
 	cfg.containerImage = fs.Arg(0)
 
 	// Derive defaults that depend on the image name.
-	tag, name := splitImageName(cfg.containerImage)
-	_ = tag
+	_, name := splitImageName(cfg.containerImage)
 	if cfg.outputImage == "" {
 		cfg.outputImage = name + ".raw"
 	}
@@ -75,18 +77,22 @@ func parseArgs() (config, error) {
 
 // splitImageName mirrors the bash TAG/IMAGE_NAME extraction.
 //
-//	"registry/repo/name:tag" → tag="tag", name="name"
+//	"registry/repo/name:tag"       → tag="tag", name="name"
+//	"localhost:5000/name"          → tag="",    name="name"
+//	"registry/repo/name@sha256:x"  → tag="",    name="name"
 func splitImageName(image string) (tag, name string) {
-	// tag is everything after the last ':'
-	if i := strings.LastIndex(image, ":"); i >= 0 {
-		tag = image[i+1:]
-		image = image[:i]
+	// Only the last path component can carry a tag or digest; earlier
+	// components may contain a registry port ("host:5000").
+	name = image
+	if i := strings.LastIndex(name, "/"); i >= 0 {
+		name = name[i+1:]
 	}
-	// name is everything after the last '/'
-	if i := strings.LastIndex(image, "/"); i >= 0 {
-		name = image[i+1:]
-	} else {
-		name = image
+	if i := strings.Index(name, "@"); i >= 0 { // drop digest
+		name = name[:i]
+	}
+	if i := strings.LastIndex(name, ":"); i >= 0 {
+		tag = name[i+1:]
+		name = name[:i]
 	}
 	return
 }
@@ -104,9 +110,46 @@ func run(name string, args ...string) error {
 }
 
 // runOutput executes a command and returns trimmed stdout.
+// Any stderr is appended to the returned error.
 func runOutput(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).Output()
-	return strings.TrimSpace(string(out)), err
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command(name, args...)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
+		}
+	}
+	return strings.TrimSpace(stdout.String()), err
+}
+
+// humanIEC formats a byte count like "numfmt --to=iec".
+func humanIEC(n int64) string {
+	out, err := runOutput("numfmt", "--to=iec", strconv.FormatInt(n, 10))
+	if err != nil {
+		return strconv.FormatInt(n, 10)
+	}
+	return out
+}
+
+// waitForDevices waits (briefly) for device nodes to appear after partprobe.
+func waitForDevices(paths ...string) error {
+	_ = run("udevadm", "settle")
+	deadline := time.Now().Add(10 * time.Second)
+	for _, p := range paths {
+		for {
+			if _, err := os.Stat(p); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("timed out waiting for %s", p)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return nil
 }
 
 // podmanExec runs a command inside a running container (podman exec <ctr> ...).
@@ -145,15 +188,15 @@ func parseSize(s string) (int64, error) {
 
 func main() {
 	log.SetFlags(0) // no timestamp prefix – matches bash script style
-	log.SetPrefix("ctr2raw: ")
+	log.SetPrefix("rawim: ")
 
 	cfg, err := parseArgs()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if err := run("true"); err != nil { // noop – just verify PATH is sane
-		log.Fatal(err)
+	if os.Geteuid() != 0 {
+		log.Fatal("must be run as root (needs loop devices, mounts and privileged containers)")
 	}
 
 	if err := buildImage(cfg); err != nil {
@@ -193,7 +236,8 @@ func buildImage(cfg config) error {
 		return err
 	}
 	reservedStartBytes := int64(1 * 1024 * 1024) // 1 MiB GPT headers
-	requiredSize := reservedStartBytes + espBytes + ctrImageBytes + rootExtraBytes
+	reservedEndBytes := int64(2 * 1024 * 1024)   // ESP rounding up to a MiB + backup GPT
+	requiredSize := reservedStartBytes + espBytes + ctrImageBytes + rootExtraBytes + reservedEndBytes
 	imageSize := (requiredSize + 511) / 512 * 512 // round up to 512-byte boundary
 
 	// -------------------------------------------------------------------------
@@ -219,14 +263,27 @@ func buildImage(cfg config) error {
 	fmt.Printf("Using loop device: %s\n", loopDev)
 
 	// Cleanup function – mirrors bash trap cleanup EXIT.
-	var ctr string // set later; captured by closure
+	var (
+		ctr          string // set later; captured by closure
+		rootMounted  bool   // true once we have mounted the root partition
+		createdMount bool   // true if we created the mount point directory
+		succeeded    bool
+	)
 	cleanup := func() {
 		fmt.Println("Cleaning up...")
 		if ctr != "" {
 			_ = run("podman", "rm", "--force", "--time=1", ctr)
 		}
+		if rootMounted {
+			_ = run("umount", cfg.rootMount)
+		}
+		if createdMount {
+			_ = os.Remove(cfg.rootMount) // only removes it if empty
+		}
 		_ = run("losetup", "-d", loopDev)
-		_ = run("umount", cfg.rootMount)
+		if !succeeded {
+			_ = os.Remove(cfg.outputImage) // don't leave a partial image
+		}
 	}
 	defer cleanup()
 
@@ -254,8 +311,10 @@ func buildImage(cfg config) error {
 	if err := run("partprobe", loopDev); err != nil {
 		return fmt.Errorf("partprobe: %w", err)
 	}
-	// Small sleep to let the kernel re-read the partition table.
-	_ = run("sleep", "1")
+	// Wait for the kernel/udev to create the partition device nodes.
+	if err := waitForDevices(loopDev+"p1", loopDev+"p2"); err != nil {
+		return err
+	}
 
 	// -------------------------------------------------------------------------
 	// 6. Format partitions
@@ -281,7 +340,7 @@ func buildImage(cfg config) error {
 	// -------------------------------------------------------------------------
 	fmt.Println("Starting container with loop device access...")
 	ctrID, err := runOutput("podman", "run", "-d", "--privileged",
-		"--device", loopDev, cfg.containerImage, "sleep", "infinity")
+		"--device", loopDev, "--entrypoint", "sleep", cfg.containerImage, "infinity")
 	if err != nil {
 		return fmt.Errorf("podman run: %w", err)
 	}
@@ -337,8 +396,11 @@ func buildImage(cfg config) error {
 	// -------------------------------------------------------------------------
 	fmt.Println("Verifying kernel installation...")
 	kernelVersion, err := podmanExecOutput(ctr, "bash", "-c", "ls /lib/modules/ | sort -V | tail -n1")
-	if err != nil || kernelVersion == "" {
-		return fmt.Errorf("cannot find any kernels: %w", err)
+	if err != nil {
+		return fmt.Errorf("listing kernels: %w", err)
+	}
+	if kernelVersion == "" {
+		return errors.New("cannot find any kernels in /lib/modules")
 	}
 	fmt.Printf("Kernel version: %s\n", kernelVersion)
 
@@ -469,29 +531,39 @@ func buildImage(cfg config) error {
 	if err != nil {
 		return fmt.Errorf("parsing blockdev output %q: %w", rootPartBytesStr, err)
 	}
-	if ctrRootfsBytes > rootPartBytes {
-		ctrHuman, _ := runOutput("numfmt", "--to=iec", strconv.FormatInt(ctrRootfsBytes, 10))
-		partHuman, _ := runOutput("numfmt", "--to=iec", strconv.FormatInt(rootPartBytes, 10))
-		return fmt.Errorf("container rootfs (%sB) larger than root partition (%sB)", ctrHuman, partHuman)
-	}
-	ctrHuman, _ := runOutput("numfmt", "--to=iec", strconv.FormatInt(ctrRootfsBytes, 10))
-	partHuman, _ := runOutput("numfmt", "--to=iec", strconv.FormatInt(rootPartBytes, 10))
-	fmt.Printf("Container setup complete: %sB c.f. root partition of %sB\n", ctrHuman, partHuman)
+	fmt.Printf("Container setup complete: %sB c.f. root partition of %sB\n",
+		humanIEC(ctrRootfsBytes), humanIEC(rootPartBytes))
 
 	// -------------------------------------------------------------------------
 	// 19. Export container filesystem to root partition
 	// -------------------------------------------------------------------------
 	fmt.Println("Exporting container to root partition...")
+	if _, err := os.Stat(cfg.rootMount); os.IsNotExist(err) {
+		createdMount = true
+	}
 	if err := os.MkdirAll(cfg.rootMount, 0o755); err != nil {
 		return fmt.Errorf("mkdir root mount: %w", err)
 	}
 	if err := run("mount", loopDev+"p2", cfg.rootMount); err != nil {
 		return fmt.Errorf("mount root partition: %w", err)
 	}
+	rootMounted = true
+
+	// Check against the space actually usable on the filesystem (ext4
+	// metadata overhead means this is less than the raw partition size).
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(cfg.rootMount, &st); err != nil {
+		return fmt.Errorf("statfs %s: %w", cfg.rootMount, err)
+	}
+	freeBytes := int64(st.Bfree) * int64(st.Bsize)
+	if ctrRootfsBytes > freeBytes {
+		return fmt.Errorf("container rootfs (%sB) larger than space available on root filesystem (%sB): increase -root-extra",
+			humanIEC(ctrRootfsBytes), humanIEC(freeBytes))
+	}
 
 	// podman export | tar  (pipeline in Go: connect pipes manually)
 	exportCmd := exec.Command("podman", "export", ctr)
-	tarCmd := exec.Command("tar", "-C", cfg.rootMount, "--exclude=boot/efi/*", "-xpf", "-")
+	tarCmd := exec.Command("tar", "-C", cfg.rootMount, "--exclude=boot/efi/*", "--numeric-owner", "-xpf", "-")
 	tarCmd.Stdout = os.Stdout
 	tarCmd.Stderr = os.Stderr
 
@@ -534,9 +606,7 @@ func buildImage(cfg config) error {
 			"/usr/bin/ping:cap_net_raw=p",
 		}
 	}
-	if cfg.capfilesUser != "" {
-    capfiles = append(capfiles, strings.Fields(cfg.capfilesUser)...)
-}
+	capfiles = append(capfiles, strings.Fields(cfg.capfilesUser)...)
 
 	for _, entry := range capfiles {
 		parts := strings.SplitN(entry, ":", 2)
@@ -544,10 +614,18 @@ func buildImage(cfg config) error {
 			return fmt.Errorf("invalid capfiles entry: %q", entry)
 		}
 		hostPath := filepath.Join(cfg.rootMount, parts[0])
-		if _, err := os.Stat(hostPath); err == nil {
-			if err := run("setcap", parts[1], hostPath); err != nil {
-				return fmt.Errorf("setcap %s: %w", hostPath, err)
-			}
+		// Lstat, not Stat: an absolute symlink inside the image would
+		// otherwise resolve against the host filesystem.
+		fi, err := os.Lstat(hostPath)
+		if err != nil {
+			continue // not an error for the file to be missing
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			fmt.Printf("Skipping capability on symlink %s\n", parts[0])
+			continue
+		}
+		if err := run("setcap", parts[1], hostPath); err != nil {
+			return fmt.Errorf("setcap %s: %w", hostPath, err)
 		}
 	}
 
@@ -563,6 +641,7 @@ func buildImage(cfg config) error {
 		return fmt.Errorf("final sync: %w", err)
 	}
 
+	succeeded = true
 	fmt.Printf("\nImage creation complete: %s\n\n", cfg.outputImage)
 	return nil
 }
