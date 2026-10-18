@@ -424,6 +424,7 @@ func buildImage(cfg config) error {
 	ctrInitramfsPath := "/boot/initramfs-" + kernelVersion + ".img"
 	if err := podmanExec(ctr,
 		"dracut", "--force",
+		"--no-hostonly", // generic initramfs: don't depend on the build host's hardware/kernel
 		"--add-drivers", "virtio_blk virtio_pci virtio_scsi",
 		"--filesystems", "ext4 vfat",
 		ctrInitramfsPath, kernelVersion,

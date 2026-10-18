@@ -103,8 +103,9 @@ requiring them on the build host. Only the final export is done from the host. S
    The distro is detected from `/etc/os-release` (`ID`: `rocky` or `ubuntu`; anything else is rejected).
 5. **Check the image has the required packages** (see below) and find the kernel: the highest version in
    `/lib/modules`. The kernel file is `/lib/modules/<ver>/vmlinuz` on Rocky and `/boot/vmlinuz-<ver>` on Ubuntu.
-6. **Regenerate the initramfs in the container** with `dracut`, forcing in the virtio block/PCI/SCSI
-   drivers and ext4/vfat support, so the image boots under KVM/QEMU and clouds as well as on bare metal.
+6. **Regenerate the initramfs in the container** with `dracut --no-hostonly` (so the result doesn't
+   depend on the build host's hardware or kernel), forcing in the virtio block/PCI/SCSI drivers and
+   ext4/vfat support, so the image boots under KVM/QEMU and clouds as well as on bare metal.
 7. **Install the bootloader in the container:** mount the ESP (partition 1 of the loop device) at
    `/boot/efi` and run `bootctl install --esp-path=/boot/efi`. Then write `loader.conf` and a single
    boot entry (`root=LABEL=rootfs ro`, console on both `tty0` and `ttyS0,115200n8`), and copy the
@@ -134,6 +135,11 @@ once booted (networking, ssh, cloud-init, ...) with relevant services enabled vi
 |---|---|
 | `rocky` | `systemd`, `systemd-boot-unsigned`, `kernel`, `dracut` |
 | `ubuntu` | `systemd`, `systemd-boot`, `linux-image-generic`, `dracut` |
+
+To trim the initramfs, put dracut configuration in the image, e.g. `/etc/dracut.conf.d/*.conf` with
+`omit_dracutmodules+=" plymouth nfs "` or an exclusive `drivers+=" ... "` list; `dracut` reads it
+when `rawim` runs it in the container. `--no-hostonly` is always passed, overriding any `hostonly=`
+setting in the image.
 
 See the examples in [containerfiles/](./containerfiles): `rockylinux9`, `ubuntu24` and `openhpc`
 (Rocky plus OpenHPC packages).
@@ -171,7 +177,7 @@ many `RUN` lines to improve layer caching without bloating the image,
 which in turn reduces the final disk size.
 
 For `ubuntu` the same approach applies using `-v` mounts for
-`/var/cache/apt` and `/var/lib/apt/lists`. The   official Ubuntu image
+`/var/cache/apt` and `/var/lib/apt/lists`. The official Ubuntu image
 disables package caching through `/etc/apt/apt.conf.d/docker-clean`, so
 delete that file in the containerfile and set
 `Binary::apt::APT::Keep-Downloaded-Packages "true";`
